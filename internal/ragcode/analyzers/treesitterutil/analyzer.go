@@ -22,6 +22,10 @@
 package treesitterutil
 
 import (
+	"context"
+	"fmt"
+	"os"
+
 	sitter "github.com/smacker/go-tree-sitter"
 
 	"github.com/doITmagic/rag-code-mcp/internal/codetypes"
@@ -56,10 +60,6 @@ type Options struct {
 	Extract Extractor
 }
 
-type TreeSitterParser interface {
-	GetNextChunk() codetypes.CodeChunk
-}
-
 // CodeAnalyzer is the generic tree-sitter-backed PathAnalyzer. Per-language
 // analyzers embed *CodeAnalyzer and supply an Extractor via Options.
 type CodeAnalyzer struct {
@@ -80,7 +80,10 @@ func NewCodeAnalyzer(opts Options) *CodeAnalyzer {
 // NewCodeAnalyzerWithOptions returns a CodeAnalyzer with all fields under
 // caller control. Callers must set opts.Language and opts.Extract.
 func NewCodeAnalyzerWithOptions(opts Options) *CodeAnalyzer {
-	panic("TODO: implement (allocate ParserPool, store opts, return &CodeAnalyzer{...})")
+	return &CodeAnalyzer{
+		opts: opts,
+		pool: NewParserPool(opts.Language),
+	}
 }
 
 // AnalyzePaths satisfies codetypes.PathAnalyzer: it walks each input path,
@@ -88,19 +91,42 @@ func NewCodeAnalyzerWithOptions(opts Options) *CodeAnalyzer {
 // all chunks. Per-file errors should be logged to stderr but not abort the
 // walk (mirroring the other analyzers).
 func (ca *CodeAnalyzer) AnalyzePaths(paths []string) ([]codetypes.CodeChunk, error) {
-	panic("TODO: implement (call WalkSourceFiles, then ParseAndExtract per file)")
+	var out []codetypes.CodeChunk
+
+	err := WalkSourceFiles(paths, ca.opts.Extensions, ca.opts.SkipDirs, ca.opts.SkipTests, func(path string, content []byte) error {
+		chunks, _ := ca.ParseAndExtract(path, content)
+		out = append(out, chunks...)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("treesitterutil: AnalyzePaths: %w", err)
+	}
+
+	return out, nil
 }
 
 // AnalyzeFile parses a single file and returns its CodeChunks.
 func (ca *CodeAnalyzer) AnalyzeFile(filePath string) ([]codetypes.CodeChunk, error) {
-	panic("TODO: implement (os.ReadFile + ParseAndExtract)")
+	contents, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("treesitterutil: AnalyzeFile: %w", err)
+	}
+
+	return ca.ParseAndExtract(filePath, contents)
 }
 
 // ParseAndExtract is the lower-level entry point: parse source, hand the
 // root node to the Extractor, return the chunks. Useful when the caller
 // already has the bytes in memory (e.g. unit tests).
 func (ca *CodeAnalyzer) ParseAndExtract(filePath string, source []byte) ([]codetypes.CodeChunk, error) {
-	panic("TODO: implement (ca.pool.Parse + ca.opts.Extract)")
+	tree, err := ca.pool.Parse(context.TODO(), source)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "treesitterutil: parse: %v\n", err)
+		return nil, fmt.Errorf("treesitterutil: ParseAndExtract: %w", err)
+	}
+	defer tree.Close()
+	return ca.opts.Extract(tree.RootNode(), source, filePath)
+
 }
 
 // Pool exposes the underlying ParserPool for advanced callers that need to
