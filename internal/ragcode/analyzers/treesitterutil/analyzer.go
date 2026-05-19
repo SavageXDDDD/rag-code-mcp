@@ -67,9 +67,11 @@ type CodeAnalyzer struct {
 	pool *ParserPool
 }
 
-// NewCodeAnalyzer returns a CodeAnalyzer using DefaultSkipDirs when
-// opts.SkipDirs is nil. Use NewCodeAnalyzerWithOptions to bypass that
-// default.
+// NewCodeAnalyzer is the standard constructor: it fills in DefaultSkipDirs
+// when opts.SkipDirs is nil and otherwise delegates to
+// NewCodeAnalyzerWithOptions. Use this in all call sites that want the
+// project-wide skip defaults; use NewCodeAnalyzerWithOptions directly if
+// you need a literally empty skip list.
 func NewCodeAnalyzer(opts Options) *CodeAnalyzer {
 	if opts.SkipDirs == nil {
 		opts.SkipDirs = DefaultSkipDirs()
@@ -78,7 +80,10 @@ func NewCodeAnalyzer(opts Options) *CodeAnalyzer {
 }
 
 // NewCodeAnalyzerWithOptions returns a CodeAnalyzer with all fields under
-// caller control. Callers must set opts.Language and opts.Extract.
+// caller control — no defaults are applied. Callers must set opts.Language
+// and opts.Extract; opts.Extensions must be non-empty if AnalyzePaths is
+// going to find anything. The ParserPool is allocated eagerly so callers
+// can rely on Pool() being non-nil from this point on.
 func NewCodeAnalyzerWithOptions(opts Options) *CodeAnalyzer {
 	return &CodeAnalyzer{
 		opts: opts,
@@ -86,10 +91,19 @@ func NewCodeAnalyzerWithOptions(opts Options) *CodeAnalyzer {
 	}
 }
 
-// AnalyzePaths satisfies codetypes.PathAnalyzer: it walks each input path,
-// parses every matching file, runs the Extractor, and returns the union of
-// all chunks. Per-file errors should be logged to stderr but not abort the
-// walk (mirroring the other analyzers).
+// AnalyzePaths satisfies codetypes.PathAnalyzer. It walks each input path
+// via WalkSourceFiles, parses every matching file, runs the Extractor, and
+// returns the union of all chunks.
+//
+// Error policy: per-file failures (read, parse, extract) are reported via
+// the stderr warning printed by ParseAndExtract and silently dropped here
+// — the walk continues to the next file. The returned error is non-nil
+// only when WalkSourceFiles itself fails (e.g. a directory could not be
+// listed because of permissions); in that case the walk has aborted and
+// the returned chunk slice is nil.
+//
+// This mirrors how the Python/PHP analyzers in the codebase handle bulk
+// indexing: one broken file does not lose the entire run.
 func (ca *CodeAnalyzer) AnalyzePaths(paths []string) ([]codetypes.CodeChunk, error) {
 	var out []codetypes.CodeChunk
 
@@ -105,7 +119,14 @@ func (ca *CodeAnalyzer) AnalyzePaths(paths []string) ([]codetypes.CodeChunk, err
 	return out, nil
 }
 
-// AnalyzeFile parses a single file and returns its CodeChunks.
+// AnalyzeFile reads filePath from disk and returns its CodeChunks. Unlike
+// AnalyzePaths it does not swallow errors — read failures and parse
+// failures are wrapped with %w and returned to the caller, so
+// errors.Is/As against os.ErrNotExist or the smacker sentinels still
+// works.
+//
+// Use this when you have a single, known file and want the caller to
+// decide how to react to failure. For bulk indexing use AnalyzePaths.
 func (ca *CodeAnalyzer) AnalyzeFile(filePath string) ([]codetypes.CodeChunk, error) {
 	contents, err := os.ReadFile(filePath)
 	if err != nil {
@@ -115,9 +136,18 @@ func (ca *CodeAnalyzer) AnalyzeFile(filePath string) ([]codetypes.CodeChunk, err
 	return ca.ParseAndExtract(filePath, contents)
 }
 
-// ParseAndExtract is the lower-level entry point: parse source, hand the
-// root node to the Extractor, return the chunks. Useful when the caller
-// already has the bytes in memory (e.g. unit tests).
+// ParseAndExtract is the lower-level entry point used by AnalyzePaths and
+// AnalyzeFile. It borrows a parser from the pool, parses source, defers
+// closing the resulting *sitter.Tree (the tree owns C memory and must be
+// released explicitly, not relied on the GC finalizer), and hands the
+// root node to the Extractor.
+//
+// On parse failure it logs a single warning line to stderr and returns
+// the parse error wrapped with %w. filePath is only used for diagnostics —
+// no I/O is performed by this method, so callers that already have the
+// bytes in memory (unit tests, in-memory caches, the AnalyzePaths
+// visitor) can drive parsing without round-tripping through the
+// filesystem.
 func (ca *CodeAnalyzer) ParseAndExtract(filePath string, source []byte) ([]codetypes.CodeChunk, error) {
 	tree, err := ca.pool.Parse(context.TODO(), source)
 	if err != nil {
@@ -129,8 +159,12 @@ func (ca *CodeAnalyzer) ParseAndExtract(filePath string, source []byte) ([]codet
 
 }
 
-// Pool exposes the underlying ParserPool for advanced callers that need to
-// drive the parser themselves (e.g. incremental reparsing).
+// Pool exposes the underlying ParserPool. Most callers should not need
+// this — it exists for advanced uses that bypass the Extractor pipeline,
+// such as incremental reparsing of a single file as the user types, or
+// running tree-sitter queries directly against a node tree. The returned
+// pool is shared with this CodeAnalyzer; concurrent Get/Put is safe but
+// callers must Put every parser they Get.
 func (ca *CodeAnalyzer) Pool() *ParserPool {
 	return ca.pool
 }
