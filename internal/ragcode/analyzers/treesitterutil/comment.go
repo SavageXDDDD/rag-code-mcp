@@ -35,23 +35,26 @@ var (
 // into a clean docstring. The transformation is line-by-line:
 //
 //   - Strips the leading "/*" / "/**" opener and the trailing "*/" closer.
+//
 //   - On each interior line: trims whitespace, then if the line begins
 //     with "* " (the Javadoc/Doxygen continuation marker) strips that
 //     marker too. Lines that are exactly "*" are dropped entirely.
+//
 //   - Lines beginning with "**" are left as-is, so Markdown bold at the
 //     start of a doc line ("**Important**: …") survives.
+//
 //   - Empty lines are dropped, which means paragraph breaks inside the
 //     comment collapse. Acceptable for vector-search indexing; if you need
 //     to render the docstring verbatim, pass the raw bytes through.
 //
-//	in:  "/**\n * Hello.\n * World.\n */"
-//	out: "Hello.\nWorld."
+//     in:  "/**\n * Hello.\n * World.\n */"
+//     out: "Hello.\nWorld."
 //
-//	in:  "/* foo */"
-//	out: "foo"
+//     in:  "/* foo */"
+//     out: "foo"
 //
-//	in:  "/**\n * **Important**: see foo().\n */"
-//	out: "**Important**: see foo()."
+//     in:  "/**\n * **Important**: see foo().\n */"
+//     out: "**Important**: see foo()."
 func CleanBlockComment(s string) string {
 	const multilineCommentPrefix = "/*"
 	const multilineCommentSuffix = "*/"
@@ -126,6 +129,7 @@ func LeadingDocComment(n *sitter.Node, source []byte, commentTypes ...string) st
 			}
 		}
 
+		// TODO: Add multiple single line comment handling & merging
 		for _, marker := range singleLineCommentMarkers {
 			if strings.HasPrefix(content, marker) {
 				return CleanLineComment(content, marker)
